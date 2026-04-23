@@ -5,6 +5,7 @@
   <img src="https://img.shields.io/badge/Cold%20Spray-Impact%20Dynamics-orange?style=for-the-badge"/>
   <img src="https://img.shields.io/badge/Johnson--Cook-Plasticity-red?style=for-the-badge"/>
   <img src="https://img.shields.io/badge/ParaView-VTK%20Export-green?style=for-the-badge"/>
+  <img src="https://img.shields.io/badge/DOI-10.5281%2Fzenodo.19709385-blue?style=for-the-badge"/>
   <img src="https://img.shields.io/badge/License-CC%20BY--NC%204.0-lightgrey?style=for-the-badge"/>
 </p>
 
@@ -13,7 +14,29 @@
   Models a copper particle impacting an aluminium substrate at 500 m/s with
   Johnson-Cook elasto-viscoplastic material behaviour and adiabatic heating.
 </p>
+
 <img width="1008" height="772" alt="COL 0009" src="https://github.com/user-attachments/assets/2a357b91-f82d-400f-8676-7c492c51ae49" />
+
+---
+
+## Citation
+
+If you use this code in your research, please cite:
+
+```bibtex
+@software{mishra_2026_coldspray,
+  author    = {Mishra, A.},
+  title     = {2D Cold Spray Deposition Simulation - FreeFEM++},
+  year      = {2026},
+  publisher = {Zenodo},
+  doi       = {10.5281/zenodo.19709385},
+  url       = {https://doi.org/10.5281/zenodo.19709385}
+}
+```
+
+Plain text citation:
+
+> Mishra, A. (2026). *2D Cold Spray Deposition Simulation - FreeFEM++*. Zenodo. https://doi.org/10.5281/zenodo.19709385
 
 ---
 
