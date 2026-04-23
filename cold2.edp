@@ -1,0 +1,227 @@
+// ============================================
+// 2D Cold Spray Deposition - FreeFEM++
+// Fixed: gap=0, inertial body force on particle
+// ============================================
+
+load "iovtk"
+
+string outdir = "C:\\Users\\pedit\\Downloads\\coldspray_results\\";
+system("mkdir \"C:\\Users\\pedit\\Downloads\\coldspray_results\"");
+
+// ---- Geometry ----
+real D    = 25e-6;
+real Rp   = D/2.;
+real Lsub = 10.*D;
+real Hsub = 5.*D;
+real cx   = Lsub/2.;
+real cy   = Hsub + Rp;   // FIXED: gap=0, particle sits directly on substrate
+
+int SubBottom = 1;
+int SubRight  = 2;
+int SubTop    = 3;
+int SubLeft   = 4;
+int PartBound = 5;
+
+border S1(t=0., Lsub)  { x=t;      y=0.;     label=SubBottom; }
+border S2(t=0., Hsub)  { x=Lsub;   y=t;      label=SubRight;  }
+border S3(t=0., Lsub)  { x=Lsub-t; y=Hsub;   label=SubTop;    }
+border S4(t=0., Hsub)  { x=0.;     y=Hsub-t; label=SubLeft;   }
+
+border Pcirc(t=0., 2.*pi) {
+    x = cx + Rp*cos(t);
+    y = cy + Rp*sin(t);
+    label = PartBound;
+}
+
+// Particle is now touching substrate top — shared nodes at interface
+mesh Th = buildmesh(S1(80) + S2(40) + S3(80) + S4(40) + Pcirc(60));
+
+func rfine = D / (1. + 10.*sqrt((x-cx)^2 + (y-Hsub)^2)/D);
+Th = adaptmesh(Th, rfine, IsMetric=1, nbvx=80000, hmax=D/4., hmin=D/40.);
+
+// ---- Material properties ----
+// Copper particle
+real rhoP  = 8960.;
+real EP    = 124e9;
+real nuP   = 0.34;
+real AP    = 90e6;
+real BP    = 292e6;
+real nJCP  = 0.31;
+real CP    = 0.025;
+real TmP   = 1356.;
+real CpP   = 385.;
+real chiP  = 0.9;
+
+// Aluminium substrate
+real rhoS  = 2700.;
+real ES    = 70e9;
+real nuS   = 0.33;
+real AS    = 110e6;
+real BS    = 150e6;
+real nJCS  = 0.36;
+real CS    = 0.001;
+real TmS   = 933.;
+real CpS   = 900.;
+real chiS  = 0.9;
+
+real T0    = 300.;
+real deps0 = 1.0;
+real vimp  = -500.;   // impact velocity [m/s]
+
+// ---- Region indicator ----
+func isPart = (sqrt((x-cx)^2 + (y-cy)^2) <= Rp) ? 1. : 0.;
+
+fespace Ph(Th, P0);
+
+Ph rhoField   = isPart*rhoP  + (1.-isPart)*rhoS;
+Ph EField     = isPart*EP    + (1.-isPart)*ES;
+Ph nuField    = isPart*nuP   + (1.-isPart)*nuS;
+Ph AField     = isPart*AP    + (1.-isPart)*AS;
+Ph BField     = isPart*BP    + (1.-isPart)*BS;
+Ph nJCField   = isPart*nJCP  + (1.-isPart)*nJCS;
+Ph CField     = isPart*CP    + (1.-isPart)*CS;
+Ph TmField    = isPart*TmP   + (1.-isPart)*TmS;
+Ph CpField    = isPart*CpP   + (1.-isPart)*CpS;
+Ph chiField   = isPart*chiP  + (1.-isPart)*chiS;
+
+Ph muField     = EField / (2.*(1.+nuField));
+Ph lambdaField = EField*nuField / ((1.+nuField)*(1.-2.*nuField));
+
+fespace Uh(Th, [P2, P2]);
+fespace Sh(Th, P1);
+
+Uh [ux, uy],  [vx, vy];
+Uh [uxo, uyo],[vxo,vyo];   // previous timestep displacement
+Sh epspeq, Temp, sigvm;
+Sh sxx, syy, sxy, sigY;
+Sh depseq;
+
+// ---- Initialize ----
+ux[]  = 0.;
+uxo[] = 0.;
+Temp   = T0;
+epspeq = 0.;
+
+real sqrt2 = sqrt(2.);
+macro Eps(u1,u2) [dx(u1), dy(u2), (dy(u1)+dx(u2))/sqrt2] //
+macro Div(u1,u2) (dx(u1)+dy(u2)) //
+
+// ---- Time parameters ----
+real dt = 2e-9;    // slightly larger dt — impact is fast
+int  nt = 200;
+
+// ---- PVD header ----
+{
+ofstream pvd(outdir + "coldspray.pvd");
+pvd << "<?xml version=\"1.0\"?>" << endl;
+pvd << "<VTKFile type=\"Collection\" version=\"0.1\">" << endl;
+pvd << "<Collection>" << endl;
+}
+
+cout << "======================================" << endl;
+cout << " Cold Spray - particle on substrate"   << endl;
+cout << " D = " << D*1e6 << " um"               << endl;
+cout << " vimp = " << -vimp << " m/s"            << endl;
+cout << " dt = " << dt << " s"                  << endl;
+cout << "======================================" << endl;
+
+for (int i = 1; i <= nt; i++) {
+    real t = i*dt;
+
+    // Johnson-Cook flow stress
+    sigY = (AField + BField*pow(max(epspeq, 1e-8), nJCField))
+         * (1. + CField*log(max(max(epspeq,1e-8)/(t+1e-30), deps0)/deps0))
+         * max(1. - pow(max((Temp-T0)/(TmField-T0), 0.), 1.0), 0.01);
+
+    // ---- Dynamic elasticity solve with inertia ----
+    // rho/dt^2 * u - div(sigma) = rho/dt^2 * (2*uo - uoo) + f_body
+    // f_body on particle = rho * vimp / dt (impulse drives particle down)
+    real impforce = rhoP * vimp / dt;   // body force on particle [N/m3]
+
+    solve ColdSpray([ux,uy],[vx,vy]) =
+
+        // Elastic stiffness
+        int2d(Th)(
+            lambdaField * Div(vx,vy) * Div(ux,uy)
+          + 2.*muField  * (Eps(vx,vy)'*Eps(ux,uy))
+        )
+
+        // Inertia: rho/dt^2 * u
+      + int2d(Th)(
+            (rhoField/(dt*dt)) * (ux*vx + uy*vy)
+        )
+
+        // Inertia RHS: rho/dt^2 * (2*uo - uoo) -- here simplified to uo
+      - int2d(Th)(
+            (rhoField/(dt*dt)) * (uxo*vx + uyo*vy)
+        )
+
+        // FIXED: impact body force applied only to particle region
+        // isPart selects only particle elements
+      - int2d(Th)(
+            isPart * impforce * vy
+        )
+
+        // Boundary conditions
+      + on(SubBottom, ux=0., uy=0.)   // substrate base: fully fixed
+      + on(SubLeft,   ux=0.)          // substrate sides: no horizontal
+      + on(SubRight,  ux=0.)
+      ;
+      // NOTE: no BC on PartBound — particle is free to deform
+      //       contact is enforced through shared nodes at Hsub
+
+    // ---- Update history ----
+    uxo[] = ux[];
+
+    // ---- Equivalent plastic strain increment ----
+    depseq = sqrt(2./3.) * sqrt(
+        dx(ux)^2 + dy(uy)^2
+      + 0.5*(dy(ux)+dx(uy))^2
+    ) * dt;
+
+    epspeq = epspeq + depseq;
+
+    // ---- Adiabatic temperature ----
+    Temp = Temp + chiField * sigY * depseq / (rhoField * CpField);
+    Temp = min(Temp, TmField);
+
+    // ---- Stresses ----
+    sxx   = lambdaField*Div(ux,uy) + 2.*muField*dx(ux);
+    syy   = lambdaField*Div(ux,uy) + 2.*muField*dy(uy);
+    sxy   = muField*(dy(ux)+dx(uy));
+    sigvm = sqrt(sxx^2 - sxx*syy + syy^2 + 3.*sxy^2);
+
+    // ---- Save every 4 steps ----
+    if (i % 4 == 0) {
+        string num;
+        if      (i < 10)  num = "00" + i;
+        else if (i < 100) num = "0"  + i;
+        else              num = ""   + i;
+
+        int[int] ord = [1, 1, 1, 1, 1, 1];
+        savevtk(outdir + "result_" + num + ".vtu", Th,
+                ux, uy, epspeq, sigvm, Temp, sigY,
+                dataname = "ux uy epspeq vonMises Temp sigY",
+                order = ord);
+
+        {
+        ofstream pvd(outdir + "coldspray.pvd", append);
+        pvd << "  <DataSet timestep=\"" << t
+            << "\" file=\"result_" << num << ".vtu\"/>" << endl;
+        }
+
+        cout << "Step " << i << "/" << nt
+             << "  t="         << t
+             << "  uy_min="    << uy[].min
+             << "  sigvm_max=" << sigvm[].max
+             << "  Tmax="      << Temp[].max   << endl;
+    }
+}
+
+{
+ofstream pvd(outdir + "coldspray.pvd", append);
+pvd << "</Collection>" << endl;
+pvd << "</VTKFile>"    << endl;
+}
+
+cout << "Done. Open coldspray.pvd in ParaView." << endl;
